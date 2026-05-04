@@ -1,0 +1,23 @@
+# Build output
+build/
+Debug/
+Release/
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.o
+*.d
+*.su
+
+# IDE
+.vscode/
+.idea/
+*.uvguix.*
+*.uvoptx
+JLinkLog.txt
+
+# OS
+.DS_Store
+Thumbs.db
