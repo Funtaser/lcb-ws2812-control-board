@@ -76,13 +76,6 @@ https://oshwhub.com/funtaser/project_jbyzhaat
 
 本仓库保存 STM32G030 固件源码、构建脚本、CubeMX 配置和电控开发文档。
 
-建议两个平台互相引用：
-
-```text
-1. 立创开源硬件页面引用本 GitHub 仓库。
-2. 本 README 引用立创开源硬件页面。
-```
-
 ---
 
 ## 4. 工程目录
