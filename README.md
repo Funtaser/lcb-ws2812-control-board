@@ -17,7 +17,7 @@
 | GCC 构建入口 | [`Makefile`](Makefile) |
 | 个人开发辅助脚本 | [`Dev.mk`](Dev.mk) |
 | 链接脚本 | [`STM32G030XX_FLASH.ld`](STM32G030XX_FLASH.ld) |
-| 硬件开源页面 | `<你的立创开源链接>` |
+| 硬件开源页面 | `https://oshwhub.com/funtaser/project_jbyzhaat` |
 
 ---
 
