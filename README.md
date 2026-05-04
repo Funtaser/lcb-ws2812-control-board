@@ -69,7 +69,7 @@
 硬件开源项目链接：
 
 ```text
-<你的立创开源链接>
+https://oshwhub.com/funtaser/project_jbyzhaat
 ```
 
 ### 3.2 固件
