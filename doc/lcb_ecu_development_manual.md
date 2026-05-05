@@ -25,8 +25,8 @@
 | 静态颜色 | 支持 | `COLOR R G B` |
 | 内置动画 | 支持 | `ANIM 0..4` |
 | 自定义动画入口 | 支持 | `ANIM 4` |
-| 电压检测 | 支持 | PA0，120k / 10k 分压 |
-| 电流检测 | 支持 | PA6，20mΩ 采样电阻，20 倍放大 |
+| 电压检测 | 支持 | PA0，120k / 10k 分压，64 次平均 + IIR 滤波 |
+| 电流检测 | 支持 | PA6，20mΩ 采样电阻，20 倍放大，64 次平均 + IIR 滤波 |
 | Type-C 调试供电识别 | 支持 | 电压 < 6V 不报低压 |
 | 低压 / 过压 / 过流保护提示 | 支持 | 滤波 + 滞回 + 连续确认 |
 | PB3 状态灯 | 支持 | 低电平亮，支持呼吸 / 常亮 / 故障闪烁 |
@@ -71,9 +71,11 @@
 | 项目 | 参数 |
 |---|---|
 | SPI1 MOSI | PA7 |
-| SPI 频率 | 4MHz |
+| 系统时钟 | HSI 16MHz，无 PLL |
+| SPI 频率 | 4MHz，SPI1 分频系数 /4 |
 | 颜色顺序 | GRB |
 | 编码方式 | `0 -> 1000`，`1 -> 1110` |
+| Reset 低电平 | 前置 80 字节 + 后置 80 字节，约 160us + 160us |
 
 说明：当前固件确认使用 4MHz SPI 模拟 WS2812 时序，文档与代码保持一致。
 
@@ -148,7 +150,14 @@ Ok
 63 字符 + 结尾 \0
 ```
 
-如果一行超过限制，固件会丢弃该行直到遇到换行符，避免超长命令导致缓冲区污染。
+处理规则：
+
+1. 空行会被忽略，不返回。
+2. 如果一行超过限制，固件会清空当前接收长度，并丢弃该行直到遇到 `\r` 或 `\n`。
+3. 超长帧不会返回 `ERR`，内部仅累加饱和溢出计数 `g_uart_overflow_count`，该计数当前不通过串口输出。
+4. UART 错误回调会清空当前半包，并重新启动 1 字节中断接收。
+
+设计目的：避免超长命令或串口毛刺把残留字符拼成合法假命令。
 
 ---
 
@@ -208,13 +217,36 @@ OK ANIM RAINBOW
 
 ---
 
+### 4.3 不需要握手的命令
+
+以下命令在 `APP_WAIT_FOR_HOST` 状态下也能执行：
+
+```text
+PING
+OK
+STAT
+DEV HELP
+DEV ON
+DEV OFF
+DEV STATUS
+DEV ADC
+```
+
+除上述命令和 DEV 命令解析外，`COUNT`、`BRI`、`COLOR`、`ANIM`、`OFF` 等普通控制命令都需要先发送 `OK`。否则返回：
+
+```text
+ERR NEED_OK
+```
+
+---
+
 ## 5. 普通命令总表
 
 | 命令 | 作用 | 是否需要先 `OK` | 成功返回 |
 |---|---|---|---|
 | `PING` | 测试通信 | 否 | `PONG` |
 | `OK` | 主控握手 | 否 | `OK` |
-| `STAT` | 查询电压、电流、故障 | 否 | 纯数据 4 字段 |
+| `STAT` | 查询滤波后的电压、电流和故障 | 否 | 纯数据 4 字段 |
 | `OFF` | 关闭灯带 | 是 | `OK OFF` |
 | `COUNT <1..300>` | 设置灯珠数量 | 是 | `OK COUNT` |
 | `BRI <0..255>` | 设置全局亮度 | 是 | `OK BRI` |
@@ -291,7 +323,7 @@ STAT
 返回格式：
 
 ```text
-<电压mV> <电流mA> <真实故障> <有效故障>
+<滤波电压mV> <滤波电流mA> <真实故障> <有效故障>
 ```
 
 示例：
@@ -304,10 +336,10 @@ STAT
 
 | 字段序号 | 示例 | 含义 |
 |---|---|---|
-| 1 | 24000 | 当前母线电压，单位 mV |
-| 2 | 800 | 当前灯带电流，单位 mA |
-| 3 | 0 | 真实 ADC 判断出的故障状态 |
-| 4 | 0 | 当前最终生效的故障状态，可能被 DEV 模式覆盖 |
+| 1 | 24000 | IIR 滤波后的母线电压，单位 mV，即 `g_bus_mv_filtered` |
+| 2 | 800 | IIR 滤波后的灯带电流，单位 mA，即 `g_current_ma_filtered` |
+| 3 | 0 | 真实 ADC 判断出的故障状态，即 `g_fault` |
+| 4 | 0 | 当前最终生效的故障状态，即 `get_effective_fault()`，可能被 DEV 模式覆盖 |
 
 故障编号：
 
@@ -320,7 +352,7 @@ STAT
 
 Type-C / USB 调试供电识别：
 
-如果电压 < 6000mV 且故障为 0，表示当前被识别为 Type-C / USB 调试供电，不报低压。
+如果电压 < 6000mV 且故障为 0，表示当前被识别为 Type-C / USB 调试供电，不报低压。由于 `STAT` 使用滤波值，刚上电或刚切换供电时不要只看单次返回，建议连续读取 3~5 次确认趋势。
 
 ### 6.4 COUNT
 
@@ -586,15 +618,15 @@ static void custom_animation_1_task(uint32_t now, bool *should_update)
 代码中还有软件校准：
 
 ```c
-#define VBUS_CAL_REAL_MV 25190u
-#define VBUS_CAL_ADC_MV  25220u
+#define VBUS_CAL_REAL_MV 25235u
+#define VBUS_CAL_ADC_MV  25271u
 ```
 
-含义：电表实测 25.190V，ADC 原始换算约 25.220V，代码按 `25190 / 25220` 做比例校准。
+含义：电压计算后再按 `25235 / 25271` 做比例校准。以当前参数估算，原始换算值会被乘以约 `0.9986`。
 
-ADC 多次采样：每次通道切换后丢弃第 1 次样本，之后取 16 次平均。
+ADC 多次采样：每次切换 ADC 通道后丢弃第 1 次样本，之后最多取 `ADC_SAMPLE_COUNT = 64` 次有效样本平均；如果某次采样启动或转换失败，会跳过该次样本。
 
-电压滤波：IIR 整数滤波，系数约 1/4。
+电压滤波：IIR 整数滤波，`ADC_FILTER_SHIFT = 2`，系数约 1/4。第一次滤波值为 0 时直接装载当前样本，避免上电从 0 慢慢爬升导致假低压。
 
 ### 8.2 Type-C / USB 调试供电识别
 
@@ -624,12 +656,29 @@ U > 20300mV 或 U < 6000mV
 | 采样电阻 | 20mΩ |
 | 放大倍数 | 20 |
 
-换算关系：
+基础换算关系：
 
 ```text
-I(mA) = Vadc(mV) * 1000 / (20 * 20)
-I(mA) = Vadc(mV) * 2.5
+I_raw(mA) = Vadc(mV) * 1000 / (20 * 20)
+I_raw(mA) = Vadc(mV) * 2.5
 ```
+
+当前代码还叠加了电流比例校准：
+
+```c
+#define ISENSE_CAL_NUM 990u
+#define ISENSE_CAL_DEN 1000u
+
+I(mA) = I_raw(mA) * 990 / 1000
+```
+
+因此当前有效换算约为：
+
+```text
+I(mA) ≈ Vadc(mV) * 2.475
+```
+
+该校准用于让实测点附近的串口电流显示更贴近实际值。
 
 ### 8.4 故障编号
 
@@ -658,7 +707,7 @@ I(mA) = Vadc(mV) * 2.5
 |---|---|---|---|---|
 | 低压 | 6000mV <= U < 19800mV | U > 20300mV 或 U < 6000mV | 3 次 | 5 次 |
 | 过压 | U > 25600mV | U < 25300mV | 2 次 | 5 次 |
-| 过流 | I > 4000mA | I < 3600mA | 2 次 | 5 次 |
+| 过流 | I > 2000mA | I < 1600mA | 2 次 | 5 次 |
 
 ADC 任务周期：20ms。
 
@@ -669,6 +718,23 @@ ADC 任务周期：20ms。
 | 严重故障进入 | 约 40ms |
 | 低压进入 | 约 60ms |
 | 故障退出 | 约 100ms |
+
+对应代码宏：
+
+```c
+#define ADC_TASK_PERIOD_MS          20u
+#define FAULT_SEVERE_ENTER_COUNT    2u
+#define FAULT_LOW_ENTER_COUNT       3u
+#define FAULT_EXIT_COUNT            5u
+
+#define VBUS_TYPEC_MAX_MV           6000u
+#define VBUS_UNDERVOLT_ENTER_MV     19800u
+#define VBUS_UNDERVOLT_EXIT_MV      20300u
+#define VBUS_OVERVOLT_ENTER_MV      25600u
+#define VBUS_OVERVOLT_EXIT_MV       25300u
+#define ISENSE_OVERCURRENT_ENTER_MA 2000u
+#define ISENSE_OVERCURRENT_EXIT_MA  1600u
+```
 
 ---
 
@@ -760,6 +826,20 @@ DEV AUTO_OFF
 ```text
 ERR DEV OFF
 ```
+
+DEV 命令别名：
+
+| 类别 | 标准写法 | 当前代码也接受 |
+|---|---|---|
+| 清除模拟故障 | `DEV FAULT NONE` | `DEV FAULT CLEAR` |
+| 模拟低压 | `DEV FAULT LOW` | `DEV FAULT UNDER`、`DEV FAULT UNDERV` |
+| 模拟过压 | `DEV FAULT OVERV` | `DEV FAULT OVER_V`、`DEV FAULT VHIGH` |
+| 模拟过流 | `DEV FAULT OVERI` | `DEV FAULT OVER_C`、`DEV FAULT CURRENT` |
+| 恢复真实模式 | `DEV MODE NONE` | `DEV MODE REAL` |
+| 模拟等待主控 | `DEV MODE WAIT` | `DEV MODE HOST` |
+| 模拟空闲 | `DEV MODE IDLE` | `DEV MODE READY` |
+| 模拟动画 | `DEV MODE ANIM1..ANIM4` | `DEV MODE 1..4`，其中 `4` 也可写 `CUSTOM` |
+| 模式命令前缀 | `DEV MODE ...` | `DEV STATE ...`、`DEV LED ...` |
 
 ### 11.4 开启 / 关闭开发者模式
 
@@ -880,7 +960,23 @@ DEV MODE NONE
 OK DEV MODE REAL
 ```
 
-### 11.7 DEV STATUS
+### 11.7 DEV ADC
+
+发送：
+
+```text
+DEV ADC
+```
+
+返回格式与 `STAT` 完全相同：
+
+```text
+<滤波电压mV> <滤波电流mA> <真实故障> <有效故障>
+```
+
+该命令不要求先 `DEV ON`，也不要求先 `OK`。
+
+### 11.8 DEV STATUS
 
 发送：
 
