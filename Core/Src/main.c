@@ -47,7 +47,7 @@
 /* ADC 与保护参数 */
 #define ADC_FULL_SCALE              4095u
 #define ADC_VREF_MV                 3300u
-#define ADC_SAMPLE_COUNT            16u
+#define ADC_SAMPLE_COUNT        64u    /* ADC 每个通道连续采样次数，降低电流显示跳变 */
 #define ADC_TASK_PERIOD_MS          20u
 #define ADC_FILTER_SHIFT            2u    /* IIR 系数 1/4，整数滤波，无浮点 */
 
@@ -71,8 +71,11 @@
 /* PA6: 20mΩ 电流采样电阻，放大倍数 20，Vadc = I * 0.02 * 20 = I * 0.4 */
 #define ISENSE_SHUNT_MOHM           20u
 #define ISENSE_GAIN                 20u
-#define ISENSE_OVERCURRENT_ENTER_MA 4000u /* 高于 4A 连续确认后判定为过流 */
-#define ISENSE_OVERCURRENT_EXIT_MA  3600u /* 低于 3.6A 连续确认后退出过流 */
+#define ISENSE_OVERCURRENT_ENTER_MA 2000u /* 高于 2A 连续确认后判定为过流 */
+#define ISENSE_OVERCURRENT_EXIT_MA  1600u /* 低于 1.6A 连续确认后退出过流 */
+
+#define ISENSE_CAL_NUM          990u  /* 电流比例校准分子：184.5mV 实测点校准到约 461mA */
+#define ISENSE_CAL_DEN          1000u  /* 电流比例校准分母 */
 
 #define FAULT_SEVERE_ENTER_COUNT    2u
 #define FAULT_LOW_ENTER_COUNT       3u
@@ -1320,43 +1323,56 @@ static Rgb_t wheel(uint8_t pos)  /* 调用函数或完成表达式 */
 /* ADC 采样相关函数                                                                        */
 /* -------------------------------------------------------------------------- */
 static uint16_t adc_read_raw_avg(uint32_t channel)  /* 定义或声明函数 */
-{  /* 代码块开始 */
-  ADC_ChannelConfTypeDef sConfig = {0};  /* 赋值或更新变量 */
-  uint32_t sum = 0u;  /* 定义局部变量 */
-  uint16_t raw = 0u;  /* 定义局部变量 */
+{
+	ADC_ChannelConfTypeDef sConfig = {0};
+	uint32_t sum = 0u;
+	uint32_t valid_count = 0u;
+	uint16_t raw = 0u;
 
-  sConfig.Channel = channel;  /* 赋值或更新变量 */
-  sConfig.Rank = ADC_REGULAR_RANK_1;  /* 赋值或更新变量 */
-  sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;  /* 赋值或更新变量 */
+	sConfig.Channel = channel;
+	sConfig.Rank = ADC_REGULAR_RANK_1;
+	sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
 
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)  /* 判断条件是否成立 */
-  {  /* 代码块开始 */
-    return 0u;  /* 返回函数结果 */
-  }  /* 代码块结束 */
+	if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+	{
+		return 0u;
+	}
 
-  for (uint8_t i = 0u; i <= ADC_SAMPLE_COUNT; i++)  /* 第 0 次为通道切换后的丢弃样 */
-  {  /* 代码块开始 */
-    if (HAL_ADC_Start(&hadc1) != HAL_OK)  /* 判断条件是否成立 */
-    {  /* 代码块开始 */
-      (void)HAL_ADC_Stop(&hadc1);  /* 调用函数或完成表达式 */
-      return 0u;  /* 返回函数结果 */
-    }  /* 代码块结束 */
+	/* 切换 ADC 通道后第一次采样可能带有上一个通道残留，所以丢弃 */
+	if (HAL_ADC_Start(&hadc1) == HAL_OK)
+	{
+		if (HAL_ADC_PollForConversion(&hadc1, 5u) == HAL_OK)
+		{
+			(void)HAL_ADC_GetValue(&hadc1);
+		}
 
-    if (HAL_ADC_PollForConversion(&hadc1, 5u) == HAL_OK)  /* 判断条件是否成立 */
-    {  /* 代码块开始 */
-      raw = (uint16_t)HAL_ADC_GetValue(&hadc1);  /* 赋值或更新变量 */
-      if (i != 0u)  /* 判断条件是否成立 */
-      {  /* 代码块开始 */
-        sum += raw;  /* 赋值或更新变量 */
-      }  /* 代码块结束 */
-    }  /* 代码块结束 */
+		(void)HAL_ADC_Stop(&hadc1);
+	}
 
-    (void)HAL_ADC_Stop(&hadc1);  /* 调用函数或完成表达式 */
-  }  /* 代码块结束 */
+	for (uint8_t i = 0u; i < ADC_SAMPLE_COUNT; i++)
+	{
+		if (HAL_ADC_Start(&hadc1) != HAL_OK)
+		{
 
-  return (uint16_t)((sum + (ADC_SAMPLE_COUNT / 2u)) / ADC_SAMPLE_COUNT);  /* 返回函数结果 */
-}  /* 代码块结束 */
+			continue;
+		}
 
+		if (HAL_ADC_PollForConversion(&hadc1, 5u) == HAL_OK)
+		{
+			raw = (uint16_t)HAL_ADC_GetValue(&hadc1);
+			sum += raw;
+			valid_count++;
+		}
+		(void)HAL_ADC_Stop(&hadc1);
+	}
+
+	if (valid_count == 0u)
+	{
+		return 0u;
+	}
+
+	return (uint16_t)((sum + (valid_count / 2u)) / valid_count);
+}
 static uint32_t adc_raw_to_mv(uint16_t raw)  /* 定义或声明函数 */
 {  /* 代码块开始 */
   return ((uint32_t)raw * ADC_VREF_MV + (ADC_FULL_SCALE / 2u)) / ADC_FULL_SCALE;  /* 返回函数结果 */
@@ -1381,7 +1397,11 @@ static uint32_t read_current_ma(void)  /* 定义或声明函数 */
   }  /* 代码块结束 */
 
   /* 电流计算：I(mA) = Vadc(mV) * 1000 / (采样电阻mΩ * 放大倍数) */
-  return (adc_mv * 1000u) / denominator;  /* 返回函数结果 */
+	uint32_t current_ma = (adc_mv * 1000u + (denominator / 2u)) / denominator;
+
+	current_ma = (current_ma * ISENSE_CAL_NUM + (ISENSE_CAL_DEN / 2u)) / ISENSE_CAL_DEN;
+
+	return current_ma;
 }  /* 代码块结束 */
 
 /* -------------------------------------------------------------------------- */
@@ -1431,9 +1451,9 @@ static void uart_send_stat(void)  /* 定义或声明函数 */
    * 示例：24000 800 0 0
    * 注意：U < 6000 且故障为 0 时，表示 Type-C/USB 调试供电。
    */
-  pos = append_u32(out, pos, g_bus_mv);  /* 赋值或更新变量 */
+  pos = append_u32(out, pos, g_bus_mv_filtered);  /* 赋值或更新变量 */
   out[pos++] = ' ';  /* 赋值或更新变量 */
-  pos = append_u32(out, pos, g_current_ma);  /* 赋值或更新变量 */
+  pos = append_u32(out, pos, g_current_ma_filtered);  /* 赋值或更新变量 */
   out[pos++] = ' ';  /* 赋值或更新变量 */
   pos = append_u32(out, pos, (uint32_t)g_fault);  /* 赋值或更新变量 */
   out[pos++] = ' ';  /* 赋值或更新变量 */
@@ -1626,8 +1646,8 @@ static void MX_ADC1_Init(void)  /* 定义或声明函数 */
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;  /* 赋值或更新变量 */
   hadc1.Init.DMAContinuousRequests = DISABLE;  /* 赋值或更新变量 */
   hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;  /* 赋值或更新变量 */
-  hadc1.Init.SamplingTimeCommon1 = ADC_SAMPLETIME_79CYCLES_5;  /* 赋值或更新变量 */
-  hadc1.Init.SamplingTimeCommon2 = ADC_SAMPLETIME_79CYCLES_5;  /* 赋值或更新变量 */
+  hadc1.Init.SamplingTimeCommon1 = ADC_SAMPLETIME_160CYCLES_5;  /* 赋值或更新变量 */
+  hadc1.Init.SamplingTimeCommon2 = ADC_SAMPLETIME_160CYCLES_5;  /* 赋值或更新变量 */
   hadc1.Init.OversamplingMode = DISABLE;  /* 赋值或更新变量 */
   hadc1.Init.TriggerFrequencyMode = ADC_TRIGGER_FREQ_HIGH;  /* 赋值或更新变量 */
   if (HAL_ADC_Init(&hadc1) != HAL_OK)  /* 判断条件是否成立 */
