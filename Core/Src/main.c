@@ -59,8 +59,8 @@
  * 电表实测 25.19V，串口/ADC 平均约 25.207V
  * 校准后 Vbus = 原始计算值 * 25190 / 25220
  */
-#define VBUS_CAL_REAL_MV            25190u
-#define VBUS_CAL_ADC_MV             25220u
+#define VBUS_CAL_REAL_MV            25235u
+#define VBUS_CAL_ADC_MV             25271u
 
 #define VBUS_TYPEC_MAX_MV           6000u  /* 小于 6V 认为是 Type-C/USB 调试供电，不报低压 */
 #define VBUS_UNDERVOLT_ENTER_MV     19800u /* 6V~19.8V 连续确认后判定为低压 */
