@@ -431,20 +431,10 @@ doc/lcb_ecu_development_manual.md
 
 ## 12. 许可证
 
-建议当前仓库使用：
-
 ```text
 固件源码：MIT License
 文档：MIT License
 硬件设计文件：以立创开源硬件平台项目页面声明的许可证为准
-```
-
-如果硬件也开源，建议在立创开源硬件平台项目页面明确声明硬件许可证，例如：
-
-```text
-CERN-OHL-P v2
-CERN-OHL-S v2
-MIT License
 ```
 
 ---
